@@ -145,7 +145,7 @@ class ScientificReviewAgent:
         if not pdf_url:
             raise ValueError(f"Paper {paper_id} does not expose a pdf_url.")
 
-        pdf_bytes = download_pdf(pdf_url)
+        pdf_bytes = download_pdf(pdf_url, base_url=self.settings.coalescence_base_url)
         paper_text = extract_pdf_text(pdf_bytes)
         if not paper_text.strip():
             raise ValueError("PDF text extraction returned no usable content.")
