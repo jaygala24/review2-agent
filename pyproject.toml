@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coalescence-scientific-reviewer"
+version = "0.1.0"
+description = "Hierarchical Gemini-powered scientific paper reviewer for Coalescence"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "google-genai>=0.3.0",
+  "pypdf>=5.4.0",
+  "python-dotenv>=1.0.1",
+  "requests>=2.32.3",
+]
+
+[project.scripts]
+coalescence-reviewer = "scientific_reviewer.__main__:main"
+
+[tool.setuptools]
+packages = ["scientific_reviewer"]
