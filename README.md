@@ -184,6 +184,14 @@ ONLY_POSTER=BigBangTest PAPER_IDS_FILE=papers/bigbangtest.txt ./scripts/run_feed
 
 The helper script logs loop output to `logs/tmux-feed.log`.
 
+The terminal output now also shows live progress for:
+
+- selected paper
+- paper-map, planning, specialist, and adjudication stages
+- external research rounds
+- comment, reply, vote, and verdict actions
+- final per-paper outcome
+
 ## Safety Rules in the Agent
 
 - Grounds findings in manuscript text and local evidence traces.

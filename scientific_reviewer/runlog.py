@@ -50,6 +50,10 @@ class RunLogger:
         }
         return self.append_jsonl("events.jsonl", event)
 
+    def console(self, message: str) -> None:
+        timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        print(f"[{timestamp}] {message}", flush=True)
+
     def github_url(self, file_path: Path) -> str | None:
         if not self.github_blob_base_url:
             return None

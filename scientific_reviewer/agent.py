@@ -34,6 +34,10 @@ class ScientificReviewAgent:
     def __init__(self, settings: Settings):
         self.settings = settings
 
+    def _paper_label(self, paper: dict[str, Any], paper_id: str) -> str:
+        title = str(paper.get("title") or "").strip()
+        return f"{title} ({paper_id})" if title else paper_id
+
     def _settings_snapshot(self) -> dict[str, Any]:
         return {
             "gemini_model": self.settings.gemini_model,
@@ -109,6 +113,7 @@ class ScientificReviewAgent:
                 "post_verdict": options.post_verdict,
             },
         )
+        logger.console(f"Starting review for paper {paper_id}")
         platform = CoalescenceClient(
             self.settings.coalescence_base_url,
             self.settings.coalescence_api_key,
@@ -138,6 +143,10 @@ class ScientificReviewAgent:
             verdict_count=len(verdicts),
             revision_count=len(revisions),
         )
+        logger.console(
+            f"Loaded paper context for {self._paper_label(paper, paper_id)}: "
+            f"{len(comments)} comments, {len(verdicts)} verdicts"
+        )
 
         pdf_url = paper.get("pdf_url") or paper.get("latest_revision", {}).get(
             "pdf_url"
@@ -157,8 +166,12 @@ class ScientificReviewAgent:
             extracted_chars=len(paper_text),
             truncated_chars=len(truncated_text),
         )
+        logger.console(
+            f"Extracted manuscript text for {paper_id}: {len(truncated_text)} chars used"
+        )
 
         filtered_comments = self._select_comments(comments)
+        logger.console(f"Stage: paper map for {paper_id}")
         paper_map = llm.generate_json(
             system_instruction=SYSTEM_PROMPT,
             prompt=paper_map_prompt(
@@ -169,7 +182,9 @@ class ScientificReviewAgent:
         )
         logger.write_json("analysis/paper_map.json", paper_map)
         logger.log_event("analysis_complete", stage="paper_map")
+        logger.console(f"Stage complete: paper map for {paper_id}")
 
+        logger.console(f"Stage: planning for {paper_id}")
         planning = llm.generate_json(
             system_instruction=SYSTEM_PROMPT,
             prompt=planning_prompt(
@@ -186,9 +201,19 @@ class ScientificReviewAgent:
                 item.get("name") for item in planning.get("specialists", [])[:4]
             ],
         )
+        logger.console(
+            "Planning selected specialists: "
+            + ", ".join(
+                item.get("name", "unknown")
+                for item in planning.get("specialists", [])[:4]
+            )
+        )
 
         specialist_outputs: list[dict[str, Any]] = []
         for specialist in planning.get("specialists", [])[:4]:
+            logger.console(
+                f"Stage: specialist {specialist.get('name', 'specialist')} for {paper_id}"
+            )
             result = llm.generate_json(
                 system_instruction=SYSTEM_PROMPT,
                 prompt=specialist_prompt(
@@ -206,7 +231,12 @@ class ScientificReviewAgent:
                 specialist=safe_name,
                 confidence=result.get("confidence"),
             )
+            logger.console(
+                f"Stage complete: specialist {safe_name} "
+                f"(confidence={float(result.get('confidence', 0.0)):.2f})"
+            )
 
+        logger.console(f"Stage: adjudication for {paper_id}")
         adjudication = llm.generate_json(
             system_instruction=SYSTEM_PROMPT,
             prompt=adjudication_prompt(
@@ -225,6 +255,11 @@ class ScientificReviewAgent:
             confidence=adjudication.get("confidence"),
             verdict_ready=adjudication.get("verdict_ready"),
             needs_more_discussion=adjudication.get("needs_more_discussion"),
+        )
+        logger.console(
+            f"Initial adjudication for {paper_id}: "
+            f"confidence={float(adjudication.get('confidence', 0.0)):.2f}, "
+            f"verdict_ready={bool(adjudication.get('verdict_ready'))}"
         )
 
         initial_confidence = float(adjudication.get("confidence", 0.0))
@@ -264,7 +299,14 @@ class ScientificReviewAgent:
                     ),
                     query_count=len(research_plan.get("queries", [])),
                 )
+                logger.console(
+                    f"Research round {research_round} for {paper_id}: "
+                    f"{len(research_plan.get('queries', []))} planned queries"
+                )
                 if not research_plan.get("needs_external_evidence"):
+                    logger.console(
+                        f"Research round {research_round}: no external evidence needed"
+                    )
                     break
 
                 external_evidence = collector.collect(
@@ -277,7 +319,14 @@ class ScientificReviewAgent:
                         "external_evidence": external_evidence,
                     }
                 )
+                logger.console(
+                    f"Research round {research_round}: gathered "
+                    f"{len(external_evidence.get('items', []))} external evidence items"
+                )
                 if not external_evidence.get("items"):
+                    logger.console(
+                        f"Research round {research_round}: no usable external evidence found"
+                    )
                     break
 
                 adjudication = llm.generate_json(
@@ -303,6 +352,11 @@ class ScientificReviewAgent:
                     confidence=adjudication.get("confidence"),
                     verdict_ready=adjudication.get("verdict_ready"),
                     needs_more_discussion=adjudication.get("needs_more_discussion"),
+                )
+                logger.console(
+                    f"Reassessment round {research_round}: "
+                    f"confidence={float(adjudication.get('confidence', 0.0)):.2f}, "
+                    f"verdict_ready={bool(adjudication.get('verdict_ready'))}"
                 )
 
         main_comment = self._build_main_comment(paper, paper_map, adjudication)
@@ -362,6 +416,7 @@ class ScientificReviewAgent:
                 paper_id=paper_id,
                 support_url=comment_url,
             )
+            logger.console(f"Posting main comment for {paper_id}")
             posted_comment = platform.post_comment(
                 paper_id=paper_id,
                 content_markdown=main_comment,
@@ -374,6 +429,13 @@ class ScientificReviewAgent:
                 "post_comment_success",
                 paper_id=paper_id,
                 comment_id=posted_comment.get("id"),
+            )
+            logger.console(
+                f"Posted main comment for {paper_id}: {posted_comment.get('id')}"
+            )
+        elif options.post_comment:
+            logger.console(
+                f"Skipped main comment for {paper_id}: confidence below comment threshold"
             )
 
         if options.engage_discussion:
@@ -388,6 +450,9 @@ class ScientificReviewAgent:
                     paper_id=paper_id,
                     parent_comment_id=reply["comment_id"],
                     support_url=reply_url,
+                )
+                logger.console(
+                    f"Posting reply on comment {reply['comment_id']} for {paper_id}"
                 )
                 posted_reply = platform.post_comment(
                     paper_id=paper_id,
@@ -405,6 +470,7 @@ class ScientificReviewAgent:
                     parent_comment_id=reply["comment_id"],
                     reply_comment_id=posted_reply.get("id"),
                 )
+                logger.console(f"Posted reply for {paper_id}: {posted_reply.get('id')}")
 
             for vote in adjudication.get("vote_plan", []):
                 target_comment = self._find_comment(
@@ -420,6 +486,9 @@ class ScientificReviewAgent:
                         target_comment_id=vote["comment_id"],
                         vote_value=int(vote["vote_value"]),
                     )
+                    logger.console(
+                        f"Casting vote {int(vote['vote_value'])} on comment {vote['comment_id']}"
+                    )
                     platform.cast_vote(
                         target_id=vote["comment_id"],
                         target_type="COMMENT",
@@ -431,6 +500,9 @@ class ScientificReviewAgent:
                         target_comment_id=vote["comment_id"],
                         vote_value=int(vote["vote_value"]),
                     )
+                    logger.console(
+                        f"Cast vote {int(vote['vote_value'])} on comment {vote['comment_id']}"
+                    )
                 except Exception as exc:  # noqa: BLE001
                     logger.write_json(
                         f"posted/vote_{vote['comment_id']}_error.json",
@@ -441,6 +513,9 @@ class ScientificReviewAgent:
                         target_comment_id=vote["comment_id"],
                         vote_value=vote.get("vote_value"),
                         error=str(exc),
+                    )
+                    logger.console(
+                        f"Vote failed on comment {vote['comment_id']}: {exc}"
                     )
 
         if (
@@ -461,6 +536,9 @@ class ScientificReviewAgent:
                 score=float(adjudication.get("score", 0.0)),
                 support_url=verdict_url,
             )
+            logger.console(
+                f"Posting verdict for {paper_id} with score {float(adjudication.get('score', 0.0)):.1f}"
+            )
             posted_verdict = platform.post_verdict(
                 paper_id=paper_id,
                 content_markdown=verdict_markdown,
@@ -474,6 +552,13 @@ class ScientificReviewAgent:
                 paper_id=paper_id,
                 verdict_id=posted_verdict.get("id"),
                 score=float(adjudication.get("score", 0.0)),
+            )
+            logger.console(f"Posted verdict for {paper_id}: {posted_verdict.get('id')}")
+        elif options.post_verdict:
+            logger.console(
+                f"Verdict deferred for {paper_id}: "
+                f"confidence={confidence:.2f}, verdict_ready={bool(adjudication.get('verdict_ready'))}, "
+                f"votes_cast={actions['vote_count_cast']}, main_comment_posted={actions['main_comment_posted']}"
             )
 
         summary = {
@@ -500,6 +585,11 @@ class ScientificReviewAgent:
             verdict_ready=adjudication.get("verdict_ready"),
             needs_more_discussion=adjudication.get("needs_more_discussion", False),
             actions=actions,
+        )
+        logger.console(
+            f"Completed review for {paper_id}: confidence={confidence:.2f}, "
+            f"verdict_ready={bool(adjudication.get('verdict_ready'))}, "
+            f"needs_more_discussion={bool(adjudication.get('needs_more_discussion', False))}"
         )
         return summary
 
@@ -546,6 +636,11 @@ class ScientificReviewAgent:
             paper_ids_file=paper_ids_file,
             only_poster=only_poster,
         )
+        logger.console(
+            f"Starting feed review: sort={sort}, domain={domain or 'all'}, "
+            f"limit={limit}, max_reviews={max_reviews}, only_poster={only_poster or 'none'}, "
+            f"paper_ids_file={paper_ids_file or 'none'}"
+        )
 
         platform = CoalescenceClient(
             self.settings.coalescence_base_url,
@@ -569,6 +664,7 @@ class ScientificReviewAgent:
             if paper_id_allowlist is None
             else len(paper_id_allowlist),
         )
+        logger.console(f"Loaded {len(papers)} feed candidates")
 
         state = SchedulerState.load(
             self.settings.logs_dir / "state" / "reviewed_papers.json"
@@ -592,6 +688,7 @@ class ScientificReviewAgent:
                     paper_id=paper_id,
                     reason="not_in_allowlist",
                 )
+                logger.console(f"Skipping {paper_id}: not in allowlist")
                 continue
             if only_poster and not self._matches_poster_filter(paper, only_poster):
                 skipped.append(
@@ -607,6 +704,9 @@ class ScientificReviewAgent:
                     reason="poster_filter_mismatch",
                     only_poster=only_poster,
                 )
+                logger.console(
+                    f"Skipping {paper_id}: poster does not match {only_poster}"
+                )
                 continue
             if state.has_reviewed(paper_id):
                 skipped.append(
@@ -617,6 +717,7 @@ class ScientificReviewAgent:
                     paper_id=paper_id,
                     reason="already_reviewed_local",
                 )
+                logger.console(f"Skipping {paper_id}: already reviewed locally")
                 continue
 
             candidate_comments = platform.get_comments(paper_id)
@@ -646,6 +747,7 @@ class ScientificReviewAgent:
                     paper_id=paper_id,
                     reason="already_participated_remote",
                 )
+                logger.console(f"Skipping {paper_id}: already participated remotely")
                 continue
 
             logger.log_event(
@@ -653,6 +755,7 @@ class ScientificReviewAgent:
                 paper_id=paper_id,
                 title=paper.get("title"),
             )
+            logger.console(f"Selected paper: {self._paper_label(paper, paper_id)}")
             summary = self.review(paper_id, options)
             state.mark_reviewed(paper_id, summary)
             results.append(summary)
@@ -673,6 +776,9 @@ class ScientificReviewAgent:
             processed=len(results),
             candidate_count=len(papers),
             skipped_count=len(skipped),
+        )
+        logger.console(
+            f"Feed review complete: processed={len(results)}, skipped={len(skipped)}"
         )
         return payload
 
