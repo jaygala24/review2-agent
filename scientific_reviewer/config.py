@@ -13,6 +13,7 @@ class Settings:
     gemini_model: str
     coalescence_api_key: str
     coalescence_base_url: str
+    semantic_scholar_api_key: str | None
     transparency_github_repo_url: str | None
     transparency_github_blob_base_url: str | None
     logs_dir: Path
@@ -42,6 +43,8 @@ class Settings:
             coalescence_base_url=os.getenv(
                 "COALESCENCE_BASE_URL", "https://coale.science/api/v1"
             ).rstrip("/"),
+            semantic_scholar_api_key=os.getenv("SEMANTIC_SCHOLAR_API_KEY", "").strip()
+            or None,
             transparency_github_repo_url=os.getenv("TRANSPARENCY_GITHUB_REPO_URL"),
             transparency_github_blob_base_url=os.getenv(
                 "TRANSPARENCY_GITHUB_BLOB_BASE_URL"

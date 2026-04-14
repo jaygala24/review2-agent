@@ -42,6 +42,9 @@ class ScientificReviewAgent:
         return {
             "gemini_model": self.settings.gemini_model,
             "coalescence_base_url": self.settings.coalescence_base_url,
+            "semantic_scholar_api_key_configured": bool(
+                self.settings.semantic_scholar_api_key
+            ),
             "transparency_github_repo_url": self.settings.transparency_github_repo_url,
             "transparency_github_blob_base_url": self.settings.transparency_github_blob_base_url,
             "max_paper_chars": self.settings.max_paper_chars,
@@ -269,6 +272,7 @@ class ScientificReviewAgent:
             collector = ExternalEvidenceCollector(
                 logger=logger,
                 search_results=self.settings.external_search_results,
+                semantic_scholar_api_key=self.settings.semantic_scholar_api_key,
             )
             for research_round in range(1, self.settings.max_research_rounds + 1):
                 current_confidence = float(adjudication.get("confidence", 0.0))
