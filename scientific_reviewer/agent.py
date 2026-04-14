@@ -510,6 +510,8 @@ class ScientificReviewAgent:
         domain: str | None,
         limit: int,
         max_reviews: int,
+        paper_ids_file: str | None,
+        only_poster: str | None,
         options: ReviewOptions,
     ) -> dict[str, Any]:
         logger = RunLogger.create(
@@ -524,6 +526,8 @@ class ScientificReviewAgent:
                 "domain": domain,
                 "limit": limit,
                 "max_reviews": max_reviews,
+                "paper_ids_file": paper_ids_file,
+                "only_poster": only_poster,
                 "review_options": {
                     "post_comment": options.post_comment,
                     "engage_discussion": options.engage_discussion,
@@ -539,6 +543,8 @@ class ScientificReviewAgent:
             domain=domain,
             limit=limit,
             max_reviews=max_reviews,
+            paper_ids_file=paper_ids_file,
+            only_poster=only_poster,
         )
 
         platform = CoalescenceClient(
@@ -547,13 +553,21 @@ class ScientificReviewAgent:
             logger=logger,
         )
         profile = platform.get_my_profile()
-        papers = platform.get_papers(sort=sort, domain=domain, limit=limit)
+        paper_id_allowlist = self._load_paper_ids(paper_ids_file)
+        if paper_id_allowlist is not None:
+            candidate_ids = paper_id_allowlist[:limit]
+            papers = [platform.get_paper(paper_id) for paper_id in candidate_ids]
+        else:
+            papers = platform.get_papers(sort=sort, domain=domain, limit=limit)
         logger.write_json("feed/candidates.json", papers)
         logger.log_event(
             "feed_loaded",
             candidate_count=len(papers),
             sort=sort,
             domain=domain,
+            allowlist_count=None
+            if paper_id_allowlist is None
+            else len(paper_id_allowlist),
         )
 
         state = SchedulerState.load(
@@ -570,6 +584,29 @@ class ScientificReviewAgent:
             paper_id = str(paper.get("id") or "")
             if not paper_id:
                 skipped.append({"reason": "missing_id", "paper": paper})
+                continue
+            if paper_id_allowlist is not None and paper_id not in paper_id_allowlist:
+                skipped.append({"paper_id": paper_id, "reason": "not_in_allowlist"})
+                logger.log_event(
+                    "feed_candidate_skipped",
+                    paper_id=paper_id,
+                    reason="not_in_allowlist",
+                )
+                continue
+            if only_poster and not self._matches_poster_filter(paper, only_poster):
+                skipped.append(
+                    {
+                        "paper_id": paper_id,
+                        "reason": "poster_filter_mismatch",
+                        "only_poster": only_poster,
+                    }
+                )
+                logger.log_event(
+                    "feed_candidate_skipped",
+                    paper_id=paper_id,
+                    reason="poster_filter_mismatch",
+                    only_poster=only_poster,
+                )
                 continue
             if state.has_reviewed(paper_id):
                 skipped.append(
@@ -638,6 +675,71 @@ class ScientificReviewAgent:
             skipped_count=len(skipped),
         )
         return payload
+
+    def _load_paper_ids(self, paper_ids_file: str | None) -> list[str] | None:
+        if not paper_ids_file:
+            return None
+        path = Path(paper_ids_file)
+        paper_ids: list[str] = []
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            paper_ids.append(line)
+        return paper_ids
+
+    def _matches_poster_filter(self, paper: dict[str, Any], only_poster: str) -> bool:
+        target = only_poster.strip().lower()
+        if not target:
+            return True
+        candidates = self._extract_poster_candidates(paper)
+        return any(candidate.lower() == target for candidate in candidates)
+
+    def _extract_poster_candidates(self, paper: dict[str, Any]) -> set[str]:
+        candidates: set[str] = set()
+        scalar_keys = (
+            "posted_by",
+            "posted_by_name",
+            "poster",
+            "poster_name",
+            "submitter",
+            "submitter_name",
+            "uploader",
+            "uploader_name",
+            "author",
+            "author_name",
+            "owner",
+            "owner_name",
+            "created_by",
+            "created_by_name",
+            "user_id",
+            "user_name",
+        )
+        object_keys = (
+            "posted_by_user",
+            "poster_user",
+            "submitter_user",
+            "uploader_user",
+            "owner_user",
+            "user",
+            "author_user",
+        )
+
+        for key in scalar_keys:
+            value = paper.get(key)
+            if isinstance(value, str) and value.strip():
+                candidates.add(value.strip())
+
+        for key in object_keys:
+            value = paper.get(key)
+            if not isinstance(value, dict):
+                continue
+            for nested_key in ("id", "name", "username", "handle"):
+                nested_value = value.get(nested_key)
+                if isinstance(nested_value, str) and nested_value.strip():
+                    candidates.add(nested_value.strip())
+
+        return candidates
 
     def _select_comments(self, comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
         sorted_comments = sorted(

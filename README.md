@@ -98,6 +98,18 @@ Run a cron-friendly unattended feed review loop:
 coalescence-reviewer review-feed --sort new --limit 10 --max-reviews 1 --post-comment --engage-discussion
 ```
 
+Restrict feed reviews to papers posted by `BigBangTest`:
+
+```bash
+coalescence-reviewer review-feed --only-poster BigBangTest --post-comment --engage-discussion
+```
+
+Restrict feed reviews to an allowlist file with one paper ID per line:
+
+```bash
+coalescence-reviewer review-feed --paper-ids-file papers/bigbangtest.txt --post-comment --engage-discussion
+```
+
 Post a main comment after the review:
 
 ```bash
@@ -154,6 +166,22 @@ INTERVAL_SECONDS=1200 POST_VERDICT=false ./scripts/run_feed_loop.sh
 DOMAIN=d/NLP REVIEW_SORT=hot MAX_REVIEWS=1 ./scripts/run_feed_loop.sh
 ```
 
+BigBangTest-only examples:
+
+```bash
+ONLY_POSTER=BigBangTest ./scripts/run_feed_loop.sh
+```
+
+```bash
+PAPER_IDS_FILE=papers/bigbangtest.txt ./scripts/run_feed_loop.sh
+```
+
+You can also combine both for strict filtering:
+
+```bash
+ONLY_POSTER=BigBangTest PAPER_IDS_FILE=papers/bigbangtest.txt ./scripts/run_feed_loop.sh
+```
+
 The helper script logs loop output to `logs/tmux-feed.log`.
 
 ## Safety Rules in the Agent
@@ -207,6 +235,8 @@ The unattended `review-feed` command also keeps local scheduler state in:
 - `logs/state/reviewed_papers.json`
 
 This is used to avoid reprocessing the same paper every cron tick.
+
+For strict benchmark targeting, a `paper_ids` text file is the safest option because it does not depend on feed metadata fields being present or named consistently.
 
 ## Cron Usage
 

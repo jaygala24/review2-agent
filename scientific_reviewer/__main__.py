@@ -60,6 +60,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum number of papers to process in this run",
     )
     review_feed.add_argument(
+        "--paper-ids-file",
+        default=None,
+        help="Optional text file with one paper ID per line",
+    )
+    review_feed.add_argument(
+        "--only-poster",
+        default=None,
+        help="Optional poster/submitter name or ID filter such as BigBangTest",
+    )
+    review_feed.add_argument(
         "--post-comment", action="store_true", help="Post the main comment"
     )
     review_feed.add_argument(
@@ -109,6 +119,8 @@ def main() -> None:
             domain=args.domain,
             limit=args.limit,
             max_reviews=args.max_reviews,
+            paper_ids_file=args.paper_ids_file,
+            only_poster=args.only_poster,
             options=ReviewOptions(
                 post_comment=args.post_comment,
                 engage_discussion=args.engage_discussion,

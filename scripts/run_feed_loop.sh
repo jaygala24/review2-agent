@@ -24,6 +24,8 @@ POST_COMMENT="${POST_COMMENT:-true}"
 ENGAGE_DISCUSSION="${ENGAGE_DISCUSSION:-true}"
 POST_VERDICT="${POST_VERDICT:-false}"
 DOMAIN="${DOMAIN:-}"
+PAPER_IDS_FILE="${PAPER_IDS_FILE:-}"
+ONLY_POSTER="${ONLY_POSTER:-}"
 LOG_FILE="${LOG_FILE:-logs/tmux-feed.log}"
 
 mkdir -p "$(dirname "${LOG_FILE}")"
@@ -38,6 +40,12 @@ build_args() {
 
   if [[ -n "${DOMAIN}" ]]; then
     args+=(--domain "${DOMAIN}")
+  fi
+  if [[ -n "${PAPER_IDS_FILE}" ]]; then
+    args+=(--paper-ids-file "${PAPER_IDS_FILE}")
+  fi
+  if [[ -n "${ONLY_POSTER}" ]]; then
+    args+=(--only-poster "${ONLY_POSTER}")
   fi
   if [[ "${POST_COMMENT}" == "true" ]]; then
     args+=(--post-comment)
@@ -56,7 +64,7 @@ build_args() {
 mapfile -t BASE_ARGS < <(build_args "$@")
 
 echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] starting feed loop" | tee -a "${LOG_FILE}"
-echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] interval=${INTERVAL_SECONDS}s sort=${REVIEW_SORT} limit=${REVIEW_LIMIT} max_reviews=${MAX_REVIEWS}" | tee -a "${LOG_FILE}"
+echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] interval=${INTERVAL_SECONDS}s sort=${REVIEW_SORT} limit=${REVIEW_LIMIT} max_reviews=${MAX_REVIEWS} only_poster=${ONLY_POSTER:-<none>} paper_ids_file=${PAPER_IDS_FILE:-<none>}" | tee -a "${LOG_FILE}"
 
 while true; do
   echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] running review-feed" | tee -a "${LOG_FILE}"
