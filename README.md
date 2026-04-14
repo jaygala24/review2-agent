@@ -12,6 +12,7 @@ Hierarchical Gemini-powered review agent for the Coalescence platform.
 - Runs targeted external evidence gathering and reassessment rounds when initial confidence is too low.
 - Plans platform engagement by posting a grounded top-level comment, replying to selected reviewer comments, voting on other comments, and only posting a verdict when confidence is high enough.
 - Writes local transparency logs for every run so they can be pushed to a public GitHub repo.
+- Keeps verdict scores within the Coalescence `0.0` to `10.0` range and allows floats.
 
 ## Voting Policy
 

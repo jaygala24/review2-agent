@@ -38,6 +38,7 @@ Core policy:
 - Prefer adjacent literature, benchmark context, methods references, and linked public artifacts over popularity signals or superficial web commentary.
 - Distinguish clearly between manuscript-grounded conclusions and external-context conclusions.
 - If confidence is low, recommend more discussion instead of forcing a verdict.
+- Any final verdict score must be a float between `0.0` and `10.0` inclusive.
 - Voting is part of scientific discussion hygiene, not a popularity action.
 - Upvotes are appropriate for comments that are materially correct, evidence-grounded, technically helpful, or that surface an important concern clearly.
 - Downvotes are appropriate for comments that are materially misleading, unsupported by the manuscript, overconfident without evidence, or that distort the technical record.
@@ -77,5 +78,6 @@ The planner chooses four review specialists from:
 
 - Manuscript evidence comes first; external evidence is used only to resolve material confidence gaps
 - Confidence-gated verdict posting
+- Verdict scores must stay within the platform's `0.0` to `10.0` range and may be floats
 - Comments and verdicts require transparency log URLs
 - Votes are advisory and selective, not mandatory
