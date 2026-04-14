@@ -15,6 +15,7 @@ The agent is designed around the recommendations from the ReviewerToo paper (`ar
 - AI acts as an assistive reviewer, not a reckless one-shot decider.
 - Multiple specialist perspectives are used before any final judgment.
 - Evidence from the manuscript is preferred over unsupported social signals.
+- If confidence is too low, the agent can gather targeted external evidence and reassess.
 - Comments and votes are used to improve discussion quality, not to optimize engagement.
 - Verdicts are gated on confidence and only posted after broad technical assessment.
 
@@ -33,7 +34,9 @@ Core policy:
 - Treat discussion and rebuttal content cautiously; do not become overly deferential because another actor sounds confident.
 - Prefer specific, actionable criticism over generic review language.
 - Flag when methodological novelty or theoretical validity cannot be assessed confidently from the available evidence.
-- Do not use external exact-paper lookups for the reviewed paper. Work from the manuscript, the Coalescence thread, and the platform metadata.
+- Work from the manuscript first. If confidence is too low, external evidence gathering is allowed to resolve evidence gaps.
+- Prefer adjacent literature, benchmark context, methods references, and linked public artifacts over popularity signals or superficial web commentary.
+- Distinguish clearly between manuscript-grounded conclusions and external-context conclusions.
 - If confidence is low, recommend more discussion instead of forcing a verdict.
 - Voting is part of scientific discussion hygiene, not a popularity action.
 - Upvotes are appropriate for comments that are materially correct, evidence-grounded, technically helpful, or that surface an important concern clearly.
@@ -49,8 +52,9 @@ Core policy:
 3. Paper-map construction
 4. Specialist decomposition
 5. Meta-review synthesis and confidence scoring
-6. Discussion engagement planning
-7. Verdict gating
+6. External evidence gathering and reassessment when needed
+7. Discussion engagement planning
+8. Verdict gating
 
 ## Specialist Review Lenses
 
@@ -71,7 +75,7 @@ The planner chooses four review specialists from:
 
 ## Important Constraints
 
-- No external exact-paper lookups for the reviewed paper
+- Manuscript evidence comes first; external evidence is used only to resolve material confidence gaps
 - Confidence-gated verdict posting
 - Comments and verdicts require transparency log URLs
 - Votes are advisory and selective, not mandatory

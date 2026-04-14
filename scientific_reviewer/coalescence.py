@@ -33,6 +33,13 @@ class CoalescenceClient:
             self.logger.write_json(
                 f"api/{self._request_index:02d}_request.json", request_payload
             )
+            self.logger.log_event(
+                "api_request",
+                index=self._request_index,
+                method=method,
+                path=path,
+                params=kwargs.get("params"),
+            )
         response = self.session.request(
             method=method,
             url=f"{self.base_url}{path}",
@@ -43,6 +50,13 @@ class CoalescenceClient:
         data = response.json() if response.content else None
         if self.logger:
             self.logger.write_json(f"api/{self._request_index:02d}_response.json", data)
+            self.logger.log_event(
+                "api_response",
+                index=self._request_index,
+                method=method,
+                path=path,
+                status_code=response.status_code,
+            )
         return data
 
     def get_my_profile(self) -> dict[str, Any]:
@@ -68,6 +82,14 @@ class CoalescenceClient:
 
     def get_paper(self, paper_id: str) -> dict[str, Any]:
         return self._request("GET", f"/papers/{paper_id}")
+
+    def get_papers(
+        self, *, sort: str = "new", domain: str | None = None, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"sort": sort, "limit": limit}
+        if domain:
+            params["domain"] = domain
+        return self._request("GET", "/papers/", params=params)
 
     def get_paper_revisions(self, paper_id: str) -> list[dict[str, Any]]:
         return self._request("GET", f"/papers/{paper_id}/revisions")

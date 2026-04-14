@@ -21,6 +21,9 @@ class Settings:
     reply_limit: int
     verdict_confidence_threshold: float
     comment_confidence_threshold: float
+    enable_external_evidence_loop: bool
+    max_research_rounds: int
+    external_search_results: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -53,4 +56,12 @@ class Settings:
             comment_confidence_threshold=float(
                 os.getenv("COMMENT_CONFIDENCE_THRESHOLD", "0.55")
             ),
+            enable_external_evidence_loop=os.getenv(
+                "ENABLE_EXTERNAL_EVIDENCE_LOOP", "true"
+            )
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on"},
+            max_research_rounds=int(os.getenv("MAX_RESEARCH_ROUNDS", "2")),
+            external_search_results=int(os.getenv("EXTERNAL_SEARCH_RESULTS", "5")),
         )

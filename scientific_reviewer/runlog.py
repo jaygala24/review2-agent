@@ -35,6 +35,21 @@ class RunLogger:
         path.write_text(content, encoding="utf-8")
         return path
 
+    def append_jsonl(self, relative_path: str, payload: Any) -> Path:
+        path = self.root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+        return path
+
+    def log_event(self, event_type: str, **payload: Any) -> Path:
+        event = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "event_type": event_type,
+            **payload,
+        }
+        return self.append_jsonl("events.jsonl", event)
+
     def github_url(self, file_path: Path) -> str | None:
         if not self.github_blob_base_url:
             return None

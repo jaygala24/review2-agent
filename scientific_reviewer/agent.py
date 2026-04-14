@@ -14,9 +14,13 @@ from scientific_reviewer.prompts import (
     adjudication_prompt,
     paper_map_prompt,
     planning_prompt,
+    reassessment_prompt,
+    research_plan_prompt,
     specialist_prompt,
 )
+from scientific_reviewer.research import ExternalEvidenceCollector
 from scientific_reviewer.runlog import RunLogger
+from scientific_reviewer.state import SchedulerState
 
 
 @dataclass(slots=True)
@@ -30,12 +34,30 @@ class ScientificReviewAgent:
     def __init__(self, settings: Settings):
         self.settings = settings
 
+    def _settings_snapshot(self) -> dict[str, Any]:
+        return {
+            "gemini_model": self.settings.gemini_model,
+            "coalescence_base_url": self.settings.coalescence_base_url,
+            "transparency_github_repo_url": self.settings.transparency_github_repo_url,
+            "transparency_github_blob_base_url": self.settings.transparency_github_blob_base_url,
+            "max_paper_chars": self.settings.max_paper_chars,
+            "max_existing_comments": self.settings.max_existing_comments,
+            "reply_limit": self.settings.reply_limit,
+            "verdict_confidence_threshold": self.settings.verdict_confidence_threshold,
+            "comment_confidence_threshold": self.settings.comment_confidence_threshold,
+            "enable_external_evidence_loop": self.settings.enable_external_evidence_loop,
+            "max_research_rounds": self.settings.max_research_rounds,
+            "external_search_results": self.settings.external_search_results,
+        }
+
     def sync_profile(self) -> dict[str, Any]:
         logger = RunLogger.create(
             self.settings.logs_dir,
             paper_id="profile-sync",
             github_blob_base_url=self.settings.transparency_github_blob_base_url,
         )
+        logger.write_json("session/settings.json", self._settings_snapshot())
+        logger.log_event("session_start", command="sync-profile")
         client = CoalescenceClient(
             self.settings.coalescence_base_url,
             self.settings.coalescence_api_key,
@@ -49,10 +71,12 @@ class ScientificReviewAgent:
             github_repo=self.settings.transparency_github_repo_url,
             description=(
                 "Hierarchical scientific validity reviewer using Gemini with "
-                "evidence-grounded specialist stages and transparent audit logs."
+                "evidence-grounded specialist stages, discussion-first escalation, "
+                "and transparent audit logs."
             ),
         )
         logger.write_json("profile.json", profile)
+        logger.log_event("session_complete", command="sync-profile")
         return profile
 
     def review(self, paper_id: str, options: ReviewOptions) -> dict[str, Any]:
@@ -64,6 +88,26 @@ class ScientificReviewAgent:
             self.settings.logs_dir,
             paper_id=paper_id,
             github_blob_base_url=self.settings.transparency_github_blob_base_url,
+        )
+        logger.write_json(
+            "session/options.json",
+            {
+                "paper_id": paper_id,
+                "post_comment": options.post_comment,
+                "engage_discussion": options.engage_discussion,
+                "post_verdict": options.post_verdict,
+            },
+        )
+        logger.write_json("session/settings.json", self._settings_snapshot())
+        logger.log_event(
+            "session_start",
+            command="review",
+            paper_id=paper_id,
+            options={
+                "post_comment": options.post_comment,
+                "engage_discussion": options.engage_discussion,
+                "post_verdict": options.post_verdict,
+            },
         )
         platform = CoalescenceClient(
             self.settings.coalescence_base_url,
@@ -87,6 +131,13 @@ class ScientificReviewAgent:
         logger.write_json("paper/revisions.json", revisions)
         logger.write_json("paper/comments.json", comments)
         logger.write_json("paper/verdicts.json", verdicts)
+        logger.log_event(
+            "paper_context_loaded",
+            paper_id=paper_id,
+            comment_count=len(comments),
+            verdict_count=len(verdicts),
+            revision_count=len(revisions),
+        )
 
         pdf_url = paper.get("pdf_url") or paper.get("latest_revision", {}).get(
             "pdf_url"
@@ -100,6 +151,12 @@ class ScientificReviewAgent:
             raise ValueError("PDF text extraction returned no usable content.")
         truncated_text = paper_text[: self.settings.max_paper_chars]
         logger.write_text("paper/extracted_text.txt", truncated_text)
+        logger.log_event(
+            "paper_text_extracted",
+            paper_id=paper_id,
+            extracted_chars=len(paper_text),
+            truncated_chars=len(truncated_text),
+        )
 
         filtered_comments = self._select_comments(comments)
         paper_map = llm.generate_json(
@@ -111,6 +168,7 @@ class ScientificReviewAgent:
             ),
         )
         logger.write_json("analysis/paper_map.json", paper_map)
+        logger.log_event("analysis_complete", stage="paper_map")
 
         planning = llm.generate_json(
             system_instruction=SYSTEM_PROMPT,
@@ -121,6 +179,13 @@ class ScientificReviewAgent:
             ),
         )
         logger.write_json("analysis/planning.json", planning)
+        logger.log_event(
+            "analysis_complete",
+            stage="planning",
+            specialists=[
+                item.get("name") for item in planning.get("specialists", [])[:4]
+            ],
+        )
 
         specialist_outputs: list[dict[str, Any]] = []
         for specialist in planning.get("specialists", [])[:4]:
@@ -135,6 +200,12 @@ class ScientificReviewAgent:
             specialist_outputs.append(result)
             safe_name = specialist.get("name", "specialist")
             logger.write_json(f"analysis/specialists/{safe_name}.json", result)
+            logger.log_event(
+                "analysis_complete",
+                stage="specialist",
+                specialist=safe_name,
+                confidence=result.get("confidence"),
+            )
 
         adjudication = llm.generate_json(
             system_instruction=SYSTEM_PROMPT,
@@ -148,11 +219,101 @@ class ScientificReviewAgent:
             ),
         )
         logger.write_json("analysis/adjudication.json", adjudication)
+        logger.log_event(
+            "analysis_complete",
+            stage="adjudication",
+            confidence=adjudication.get("confidence"),
+            verdict_ready=adjudication.get("verdict_ready"),
+            needs_more_discussion=adjudication.get("needs_more_discussion"),
+        )
+
+        initial_confidence = float(adjudication.get("confidence", 0.0))
+        evidence_rounds: list[dict[str, Any]] = []
+
+        if self.settings.enable_external_evidence_loop:
+            collector = ExternalEvidenceCollector(
+                logger=logger,
+                search_results=self.settings.external_search_results,
+            )
+            for research_round in range(1, self.settings.max_research_rounds + 1):
+                current_confidence = float(adjudication.get("confidence", 0.0))
+                if (
+                    current_confidence >= self.settings.verdict_confidence_threshold
+                    and adjudication.get("verdict_ready")
+                ):
+                    break
+
+                research_plan = llm.generate_json(
+                    system_instruction=SYSTEM_PROMPT,
+                    prompt=research_plan_prompt(
+                        paper=paper,
+                        paper_map=paper_map,
+                        specialists=specialist_outputs,
+                        adjudication=adjudication,
+                        research_round=research_round,
+                    ),
+                )
+                logger.write_json(
+                    f"analysis/research_plan_round_{research_round}.json", research_plan
+                )
+                logger.log_event(
+                    "research_plan_created",
+                    research_round=research_round,
+                    needs_external_evidence=research_plan.get(
+                        "needs_external_evidence"
+                    ),
+                    query_count=len(research_plan.get("queries", [])),
+                )
+                if not research_plan.get("needs_external_evidence"):
+                    break
+
+                external_evidence = collector.collect(
+                    research_round=research_round,
+                    queries=research_plan.get("queries", []),
+                )
+                evidence_rounds.append(
+                    {
+                        "research_plan": research_plan,
+                        "external_evidence": external_evidence,
+                    }
+                )
+                if not external_evidence.get("items"):
+                    break
+
+                adjudication = llm.generate_json(
+                    system_instruction=SYSTEM_PROMPT,
+                    prompt=reassessment_prompt(
+                        paper=paper,
+                        paper_map=paper_map,
+                        planning=planning,
+                        specialists=specialist_outputs,
+                        comments=filtered_comments,
+                        existing_verdicts=verdicts,
+                        prior_adjudication=adjudication,
+                        external_evidence=external_evidence,
+                        research_round=research_round,
+                    ),
+                )
+                logger.write_json(
+                    f"analysis/adjudication_round_{research_round}.json", adjudication
+                )
+                logger.log_event(
+                    "reassessment_complete",
+                    research_round=research_round,
+                    confidence=adjudication.get("confidence"),
+                    verdict_ready=adjudication.get("verdict_ready"),
+                    needs_more_discussion=adjudication.get("needs_more_discussion"),
+                )
 
         main_comment = self._build_main_comment(paper, paper_map, adjudication)
         main_comment_path = logger.write_text("outputs/main_comment.md", main_comment)
         comment_support = self._build_comment_support(
-            paper, paper_map, planning, specialist_outputs, adjudication
+            paper,
+            paper_map,
+            planning,
+            specialist_outputs,
+            adjudication,
+            evidence_rounds,
         )
         comment_support_path = logger.write_text(
             "outputs/main_comment_support.md", comment_support
@@ -170,7 +331,11 @@ class ScientificReviewAgent:
         verdict_support_path = logger.write_text(
             "outputs/verdict_support.md",
             self._build_verdict_support(
-                paper, paper_map, specialist_outputs, adjudication
+                paper,
+                paper_map,
+                specialist_outputs,
+                adjudication,
+                evidence_rounds,
             ),
         )
 
@@ -192,6 +357,11 @@ class ScientificReviewAgent:
                 raise ValueError(
                     "Missing TRANSPARENCY_GITHUB_BLOB_BASE_URL; required for live posting."
                 )
+            logger.log_event(
+                "post_comment_attempt",
+                paper_id=paper_id,
+                support_url=comment_url,
+            )
             posted_comment = platform.post_comment(
                 paper_id=paper_id,
                 content_markdown=main_comment,
@@ -200,6 +370,11 @@ class ScientificReviewAgent:
             actions["main_comment_posted"] = True
             actions["main_comment_id"] = posted_comment.get("id")
             logger.write_json("posted/main_comment.json", posted_comment)
+            logger.log_event(
+                "post_comment_success",
+                paper_id=paper_id,
+                comment_id=posted_comment.get("id"),
+            )
 
         if options.engage_discussion:
             for reply in replies[: self.settings.reply_limit]:
@@ -208,6 +383,12 @@ class ScientificReviewAgent:
                     raise ValueError(
                         "Missing TRANSPARENCY_GITHUB_BLOB_BASE_URL; required for live posting."
                     )
+                logger.log_event(
+                    "post_reply_attempt",
+                    paper_id=paper_id,
+                    parent_comment_id=reply["comment_id"],
+                    support_url=reply_url,
+                )
                 posted_reply = platform.post_comment(
                     paper_id=paper_id,
                     content_markdown=reply["content"],
@@ -217,6 +398,12 @@ class ScientificReviewAgent:
                 actions["reply_count_posted"] += 1
                 logger.write_json(
                     f"posted/reply_{reply['comment_id']}.json", posted_reply
+                )
+                logger.log_event(
+                    "post_reply_success",
+                    paper_id=paper_id,
+                    parent_comment_id=reply["comment_id"],
+                    reply_comment_id=posted_reply.get("id"),
                 )
 
             for vote in adjudication.get("vote_plan", []):
@@ -228,16 +415,32 @@ class ScientificReviewAgent:
                 if target_comment.get("author_id") == profile.get("id"):
                     continue
                 try:
+                    logger.log_event(
+                        "cast_vote_attempt",
+                        target_comment_id=vote["comment_id"],
+                        vote_value=int(vote["vote_value"]),
+                    )
                     platform.cast_vote(
                         target_id=vote["comment_id"],
                         target_type="COMMENT",
                         vote_value=int(vote["vote_value"]),
                     )
                     actions["vote_count_cast"] += 1
+                    logger.log_event(
+                        "cast_vote_success",
+                        target_comment_id=vote["comment_id"],
+                        vote_value=int(vote["vote_value"]),
+                    )
                 except Exception as exc:  # noqa: BLE001
                     logger.write_json(
                         f"posted/vote_{vote['comment_id']}_error.json",
                         {"error": str(exc), "vote": vote},
+                    )
+                    logger.log_event(
+                        "cast_vote_error",
+                        target_comment_id=vote["comment_id"],
+                        vote_value=vote.get("vote_value"),
+                        error=str(exc),
                     )
 
         if (
@@ -252,6 +455,12 @@ class ScientificReviewAgent:
                 raise ValueError(
                     "Missing TRANSPARENCY_GITHUB_BLOB_BASE_URL; required for live posting."
                 )
+            logger.log_event(
+                "post_verdict_attempt",
+                paper_id=paper_id,
+                score=float(adjudication.get("score", 0.0)),
+                support_url=verdict_url,
+            )
             posted_verdict = platform.post_verdict(
                 paper_id=paper_id,
                 content_markdown=verdict_markdown,
@@ -260,13 +469,22 @@ class ScientificReviewAgent:
             )
             actions["verdict_posted"] = True
             logger.write_json("posted/verdict.json", posted_verdict)
+            logger.log_event(
+                "post_verdict_success",
+                paper_id=paper_id,
+                verdict_id=posted_verdict.get("id"),
+                score=float(adjudication.get("score", 0.0)),
+            )
 
         summary = {
             "paper_id": paper_id,
             "title": paper.get("title"),
+            "initial_confidence": initial_confidence,
             "confidence": confidence,
             "score": adjudication.get("score"),
             "verdict_ready": adjudication.get("verdict_ready"),
+            "needs_more_discussion": adjudication.get("needs_more_discussion", False),
+            "external_evidence_rounds": len(evidence_rounds),
             "run_dir": str(logger.root),
             "main_comment_path": str(main_comment_path),
             "verdict_path": str(verdict_path),
@@ -274,7 +492,152 @@ class ScientificReviewAgent:
             "escalation_flags": adjudication.get("escalation_flags", []),
         }
         logger.write_json("summary.json", summary)
+        logger.log_event(
+            "session_complete",
+            command="review",
+            paper_id=paper_id,
+            confidence=confidence,
+            verdict_ready=adjudication.get("verdict_ready"),
+            needs_more_discussion=adjudication.get("needs_more_discussion", False),
+            actions=actions,
+        )
         return summary
+
+    def review_feed(
+        self,
+        *,
+        sort: str,
+        domain: str | None,
+        limit: int,
+        max_reviews: int,
+        options: ReviewOptions,
+    ) -> dict[str, Any]:
+        logger = RunLogger.create(
+            self.settings.logs_dir,
+            paper_id="feed-run",
+            github_blob_base_url=self.settings.transparency_github_blob_base_url,
+        )
+        logger.write_json(
+            "session/feed_options.json",
+            {
+                "sort": sort,
+                "domain": domain,
+                "limit": limit,
+                "max_reviews": max_reviews,
+                "review_options": {
+                    "post_comment": options.post_comment,
+                    "engage_discussion": options.engage_discussion,
+                    "post_verdict": options.post_verdict,
+                },
+            },
+        )
+        logger.write_json("session/settings.json", self._settings_snapshot())
+        logger.log_event(
+            "session_start",
+            command="review-feed",
+            sort=sort,
+            domain=domain,
+            limit=limit,
+            max_reviews=max_reviews,
+        )
+
+        platform = CoalescenceClient(
+            self.settings.coalescence_base_url,
+            self.settings.coalescence_api_key,
+            logger=logger,
+        )
+        profile = platform.get_my_profile()
+        papers = platform.get_papers(sort=sort, domain=domain, limit=limit)
+        logger.write_json("feed/candidates.json", papers)
+        logger.log_event(
+            "feed_loaded",
+            candidate_count=len(papers),
+            sort=sort,
+            domain=domain,
+        )
+
+        state = SchedulerState.load(
+            self.settings.logs_dir / "state" / "reviewed_papers.json"
+        )
+        logger.write_json("feed/state_before.json", state.payload)
+
+        results: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+
+        for paper in papers:
+            if len(results) >= max_reviews:
+                break
+            paper_id = str(paper.get("id") or "")
+            if not paper_id:
+                skipped.append({"reason": "missing_id", "paper": paper})
+                continue
+            if state.has_reviewed(paper_id):
+                skipped.append(
+                    {"paper_id": paper_id, "reason": "already_reviewed_local"}
+                )
+                logger.log_event(
+                    "feed_candidate_skipped",
+                    paper_id=paper_id,
+                    reason="already_reviewed_local",
+                )
+                continue
+
+            candidate_comments = platform.get_comments(paper_id)
+            candidate_verdicts = platform.get_verdicts(paper_id)
+            if self._has_existing_participation(
+                profile.get("id"), candidate_comments, candidate_verdicts
+            ):
+                skipped.append(
+                    {"paper_id": paper_id, "reason": "already_participated_remote"}
+                )
+                state.mark_reviewed(
+                    paper_id,
+                    {
+                        "confidence": None,
+                        "verdict_ready": False,
+                        "needs_more_discussion": False,
+                        "score": None,
+                        "run_dir": None,
+                        "actions": {
+                            "skipped": True,
+                            "reason": "already_participated_remote",
+                        },
+                    },
+                )
+                logger.log_event(
+                    "feed_candidate_skipped",
+                    paper_id=paper_id,
+                    reason="already_participated_remote",
+                )
+                continue
+
+            logger.log_event(
+                "feed_candidate_selected",
+                paper_id=paper_id,
+                title=paper.get("title"),
+            )
+            summary = self.review(paper_id, options)
+            state.mark_reviewed(paper_id, summary)
+            results.append(summary)
+
+        state.save()
+        logger.write_json("feed/state_after.json", state.payload)
+        payload = {
+            "processed": len(results),
+            "candidate_count": len(papers),
+            "results": results,
+            "skipped": skipped,
+            "state_path": str(state.path),
+        }
+        logger.write_json("feed/summary.json", payload)
+        logger.log_event(
+            "session_complete",
+            command="review-feed",
+            processed=len(results),
+            candidate_count=len(papers),
+            skipped_count=len(skipped),
+        )
+        return payload
 
     def _select_comments(self, comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
         sorted_comments = sorted(
@@ -294,6 +657,22 @@ class ScientificReviewAgent:
             if comment.get("id") == comment_id:
                 return comment
         return None
+
+    def _has_existing_participation(
+        self,
+        actor_id: str | None,
+        comments: list[dict[str, Any]],
+        verdicts: list[dict[str, Any]],
+    ) -> bool:
+        if not actor_id:
+            return False
+        for comment in comments:
+            if comment.get("author_id") == actor_id:
+                return True
+        for verdict in verdicts:
+            if verdict.get("author_id") == actor_id:
+                return True
+        return False
 
     def _build_main_comment(
         self,
@@ -321,12 +700,19 @@ class ScientificReviewAgent:
             )
             or "- No additional author questions."
         )
+        status = (
+            "Verdict currently deferred pending further discussion or evidence."
+            if adjudication.get("needs_more_discussion")
+            or not adjudication.get("verdict_ready")
+            else "Assessment is mature enough for a final verdict if platform prerequisites are met."
+        )
         return (
             f"## Summary\n{paper_map.get('one_sentence_summary', paper.get('abstract', ''))}\n\n"
             f"## Strengths\n{strengths}\n\n"
             f"## Main Technical Concerns\n{concerns}\n\n"
             f"## Questions For The Authors\n{questions}\n\n"
             f"## Overall Assessment\n{adjudication.get('overall_assessment', '')}\n\n"
+            f"## Status\n{status}\n\n"
             f"Confidence: `{float(adjudication.get('confidence', 0.0)):.2f}`\n"
         )
 
@@ -337,6 +723,7 @@ class ScientificReviewAgent:
         planning: dict[str, Any],
         specialist_outputs: list[dict[str, Any]],
         adjudication: dict[str, Any],
+        evidence_rounds: list[dict[str, Any]],
     ) -> str:
         return (
             f"# Comment Support Log\n\n"
@@ -351,6 +738,8 @@ class ScientificReviewAgent:
             + json.dumps(specialist_outputs, indent=2, ensure_ascii=True)
             + "\n```\n\n## Adjudication\n```json\n"
             + json.dumps(adjudication, indent=2, ensure_ascii=True)
+            + "\n```\n\n## External Evidence Rounds\n```json\n"
+            + json.dumps(evidence_rounds, indent=2, ensure_ascii=True)
             + "\n```\n"
         )
 
@@ -397,6 +786,7 @@ class ScientificReviewAgent:
         paper_map: dict[str, Any],
         specialist_outputs: list[dict[str, Any]],
         adjudication: dict[str, Any],
+        evidence_rounds: list[dict[str, Any]],
     ) -> str:
         return (
             f"# Verdict Support Log\n\n"
@@ -407,5 +797,7 @@ class ScientificReviewAgent:
             + json.dumps(specialist_outputs, indent=2, ensure_ascii=True)
             + "\n```\n\n## Final Adjudication\n```json\n"
             + json.dumps(adjudication, indent=2, ensure_ascii=True)
+            + "\n```\n\n## External Evidence Rounds\n```json\n"
+            + json.dumps(evidence_rounds, indent=2, ensure_ascii=True)
             + "\n```\n"
         )

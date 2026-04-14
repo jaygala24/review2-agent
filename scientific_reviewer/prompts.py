@@ -14,7 +14,9 @@ Core policy:
 - Treat discussion and rebuttal content cautiously; do not become overly deferential because another actor sounds confident.
 - Prefer specific, actionable criticism over generic review language.
 - Flag when methodological novelty or theoretical validity cannot be assessed confidently from the available evidence.
-- Do not use external exact-paper lookups for the reviewed paper. Work from the manuscript, the Coalescence thread, and the platform metadata.
+- Work from the manuscript first. If confidence is too low, external evidence gathering is allowed to resolve evidence gaps.
+- Prefer adjacent literature, benchmark context, methods references, and linked public artifacts over popularity signals or superficial web commentary.
+- Distinguish clearly between manuscript-grounded conclusions and external-context conclusions.
 - If confidence is low, recommend more discussion instead of forcing a verdict.
 - Voting is part of scientific discussion hygiene, not a popularity action.
 - Upvotes are appropriate for comments that are materially correct, evidence-grounded, technically helpful, or that surface an important concern clearly.
@@ -146,6 +148,7 @@ Return JSON with exactly these keys:
 - reply_plan: list[object with keys comment_id, stance, rationale, evidence]
 - vote_plan: list[object with keys comment_id, vote_value, rationale]
 - escalation_flags: list[string]
+- needs_more_discussion: boolean
 
 Rules:
 - Do not recommend a verdict unless the paper has been assessed from all major technical angles.
@@ -155,6 +158,7 @@ Rules:
 - Downvote when a comment is technically unsound, materially misleading, or unsupported by the manuscript evidence.
 - Abstain when a comment is mixed, underspecified, or not important enough to justify a vote.
 - Do not propose votes just to satisfy platform prerequisites; only propose them when the scientific-discussion rationale is real.
+- If confidence is too low for a verdict, set `needs_more_discussion` to true and keep the verdict deferred.
 
 Paper metadata:
 {json.dumps(paper, indent=2, ensure_ascii=True)}
@@ -167,6 +171,110 @@ Planning output:
 
 Specialist outputs:
 {json.dumps(specialists, indent=2, ensure_ascii=True)}
+
+Existing comments:
+{json.dumps(_compact_comments(comments), indent=2, ensure_ascii=True)}
+
+Existing verdicts:
+{json.dumps(existing_verdicts, indent=2, ensure_ascii=True)}
+""".strip()
+
+
+def research_plan_prompt(
+    *,
+    paper: dict[str, Any],
+    paper_map: dict[str, Any],
+    specialists: list[dict[str, Any]],
+    adjudication: dict[str, Any],
+    research_round: int,
+) -> str:
+    return f"""
+The current review is not yet confident enough for a final judgment. Plan targeted external evidence gathering.
+
+Return JSON with exactly these keys:
+- needs_external_evidence: boolean
+- confidence_blockers: list[string]
+- queries: list[object with keys query, purpose]
+- preferred_sources: list[string]
+- stop_if_found: list[string]
+
+Rules:
+- Only ask for external evidence that could materially change confidence.
+- Keep the search targeted and technical.
+- Focus on methods context, baseline expectations, adjacent literature, reproducibility norms, or linked public artifacts.
+- Do not ask for vanity signals or broad hype searches.
+
+Research round: {research_round}
+
+Paper metadata:
+{json.dumps(paper, indent=2, ensure_ascii=True)}
+
+Paper map:
+{json.dumps(paper_map, indent=2, ensure_ascii=True)}
+
+Specialist outputs:
+{json.dumps(specialists, indent=2, ensure_ascii=True)}
+
+Current adjudication:
+{json.dumps(adjudication, indent=2, ensure_ascii=True)}
+""".strip()
+
+
+def reassessment_prompt(
+    *,
+    paper: dict[str, Any],
+    paper_map: dict[str, Any],
+    planning: dict[str, Any],
+    specialists: list[dict[str, Any]],
+    comments: list[dict[str, Any]],
+    existing_verdicts: list[dict[str, Any]],
+    prior_adjudication: dict[str, Any],
+    external_evidence: dict[str, Any],
+    research_round: int,
+) -> str:
+    return f"""
+Reassess the paper after targeted external evidence gathering.
+
+Return JSON with exactly these keys:
+- overall_assessment: string
+- confidence: number
+- consensus_strengths: list[string]
+- consensus_concerns: list[object with keys point, severity, rationale]
+- disagreement_points: list[string]
+- questions_for_authors: list[string]
+- main_comment_should_post: boolean
+- score: number
+- verdict_ready: boolean
+- verdict_rationale: string
+- reply_plan: list[object with keys comment_id, stance, rationale, evidence]
+- vote_plan: list[object with keys comment_id, vote_value, rationale]
+- escalation_flags: list[string]
+- needs_more_discussion: boolean
+
+Rules:
+- Upgrade confidence only if the external evidence actually resolves the identified blockers.
+- If blockers remain, keep the verdict deferred and shift toward discussion.
+- Separate manuscript evidence from external context in your reasoning.
+
+Research round: {research_round}
+
+Paper metadata:
+{json.dumps(paper, indent=2, ensure_ascii=True)}
+
+Paper map:
+{json.dumps(paper_map, indent=2, ensure_ascii=True)}
+
+Planning output:
+{json.dumps(planning, indent=2, ensure_ascii=True)}
+
+Specialist outputs:
+{json.dumps(specialists, indent=2, ensure_ascii=True)}
+
+Prior adjudication:
+{json.dumps(prior_adjudication, indent=2, ensure_ascii=True)}
+
+External evidence bundle:
+{json.dumps(external_evidence, indent=2, ensure_ascii=True)}
 
 Existing comments:
 {json.dumps(_compact_comments(comments), indent=2, ensure_ascii=True)}

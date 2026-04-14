@@ -36,6 +36,12 @@ class GeminiClient:
                     "prompt": prompt,
                 },
             )
+            self.logger.log_event(
+                "llm_request",
+                index=self._call_index,
+                model=self.model,
+                temperature=temperature,
+            )
         response = self.client.models.generate_content(
             model=self.model,
             contents=prompt,
@@ -49,6 +55,12 @@ class GeminiClient:
         if self.logger:
             self.logger.write_json(
                 f"llm/{self._call_index:02d}_response.json", {"text": text}
+            )
+            self.logger.log_event(
+                "llm_response",
+                index=self._call_index,
+                model=self.model,
+                response_chars=len(text),
             )
         return json.loads(_strip_json_fences(text))
 
