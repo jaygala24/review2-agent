@@ -405,6 +405,7 @@ class ScientificReviewAgent:
         }
 
         confidence = float(adjudication.get("confidence", 0.0))
+        score_value = self._coerce_score(adjudication.get("score"))
         can_post_comment = bool(adjudication.get("main_comment_should_post", True)) or (
             confidence >= self.settings.comment_confidence_threshold
         )
@@ -526,6 +527,7 @@ class ScientificReviewAgent:
             options.post_verdict
             and adjudication.get("verdict_ready")
             and confidence >= self.settings.verdict_confidence_threshold
+            and score_value is not None
             and actions["vote_count_cast"] > 0
             and actions["main_comment_posted"]
         ):
@@ -537,16 +539,16 @@ class ScientificReviewAgent:
             logger.log_event(
                 "post_verdict_attempt",
                 paper_id=paper_id,
-                score=float(adjudication.get("score", 0.0)),
+                score=score_value,
                 support_url=verdict_url,
             )
             logger.console(
-                f"Posting verdict for {paper_id} with score {float(adjudication.get('score', 0.0)):.1f}"
+                f"Posting verdict for {paper_id} with score {score_value:.1f}"
             )
             posted_verdict = platform.post_verdict(
                 paper_id=paper_id,
                 content_markdown=verdict_markdown,
-                score=float(adjudication.get("score", 0.0)),
+                score=score_value,
                 github_file_url=verdict_url,
             )
             actions["verdict_posted"] = True
@@ -555,13 +557,13 @@ class ScientificReviewAgent:
                 "post_verdict_success",
                 paper_id=paper_id,
                 verdict_id=posted_verdict.get("id"),
-                score=float(adjudication.get("score", 0.0)),
+                score=score_value,
             )
             logger.console(f"Posted verdict for {paper_id}: {posted_verdict.get('id')}")
         elif options.post_verdict:
             logger.console(
                 f"Verdict deferred for {paper_id}: "
-                f"confidence={confidence:.2f}, verdict_ready={bool(adjudication.get('verdict_ready'))}, "
+                f"confidence={confidence:.2f}, verdict_ready={bool(adjudication.get('verdict_ready'))}, score_available={score_value is not None}, "
                 f"votes_cast={actions['vote_count_cast']}, main_comment_posted={actions['main_comment_posted']}"
             )
 
@@ -570,7 +572,7 @@ class ScientificReviewAgent:
             "title": paper.get("title"),
             "initial_confidence": initial_confidence,
             "confidence": confidence,
-            "score": adjudication.get("score"),
+            "score": score_value,
             "verdict_ready": adjudication.get("verdict_ready"),
             "needs_more_discussion": adjudication.get("needs_more_discussion", False),
             "external_evidence_rounds": len(evidence_rounds),
@@ -983,14 +985,28 @@ class ScientificReviewAgent:
     def _build_verdict(
         self, paper: dict[str, Any], adjudication: dict[str, Any]
     ) -> str:
-        score = float(adjudication.get("score", 0.0))
+        score = self._coerce_score(adjudication.get("score"))
+        score_line = (
+            f"Score: `{score:.1f}/10`" if score is not None else "Score: `deferred`"
+        )
         return (
             f"## Verdict\n{adjudication.get('overall_assessment', '')}\n\n"
             f"## Score Rationale\n{adjudication.get('verdict_rationale', '')}\n\n"
-            f"Score: `{score:.1f}/10`\n"
+            f"{score_line}\n"
             f"Confidence: `{float(adjudication.get('confidence', 0.0)):.2f}`\n\n"
             f"Paper: **{paper.get('title')}**\n"
         )
+
+    def _coerce_score(self, value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            return None
+        if 0.0 <= score <= 10.0:
+            return score
+        return None
 
     def _build_verdict_support(
         self,
